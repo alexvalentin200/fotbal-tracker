@@ -24,13 +24,6 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <!-- Babel -->
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Firebase SDK v10 -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-        window.fb = { initializeApp, getDatabase, ref, set, onValue };
-        window.dispatchEvent(new Event('fb-ready'));
-    </script>
     <style>body { background-color: #0B0F19; color: #F3F4F6; font-family: system-ui, sans-serif; }</style>
 </head>
 <body class="bg-dark-900 text-gray-100 min-h-screen">
@@ -39,113 +32,61 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        const firebaseConfig = {
-            databaseURL: "https://sintetic-pro-default-rtdb.europe-west1.firebasedatabase.app/"
-        };
-
         function App() {
-            const [connected, setConnected] = useState(false);
-            const [sessionId, setSessionId] = useState(() => localStorage.getItem('sintetic_sid') || 'meci-luni');
-            const [inputSid, setInputSid] = useState(sessionId);
             const [activeTab, setActiveTab] = useState('match');
 
-            // Starea globală sincronizată
-            const [teamNames, setTeamNames] = useState({ teamA: 'Echipa A', teamB: 'Echipa B', teamC: 'Echipa C' });
-            const [teams, setTeams] = useState({ teamA: [], teamB: [], teamC: [] });
-            const [pool, setPool] = useState([
-                { id: '1', name: 'Valentin', rating: 5, role: 'player', paid: false, present: true },
-                { id: '2', name: 'Dragoș', rating: 4, role: 'player', paid: false, present: true },
-                { id: '3', name: 'Irinel', rating: 4, role: 'player', paid: false, present: true },
-                { id: '4', name: 'Alexie', rating: 3, role: 'player', paid: false, present: true },
-                { id: '5', name: 'Mihai', rating: 3, role: 'goalkeeper', paid: false, present: true },
-                { id: '6', name: 'Andrei', rating: 4, role: 'player', paid: false, present: true },
-                { id: '7', name: 'Bogdan', rating: 3, role: 'player', paid: false, present: true },
-                { id: '8', name: 'Cristi', rating: 3, role: 'goalkeeper', paid: false, present: true }
+            // Baza de date permanentă a grupului
+            const [rosterGroup, setRosterGroup] = useState(() => JSON.parse(localStorage.getItem('sintetic_rosterGroup')) || [
+                { id: '1', name: 'Valentin', rating: 5, role: 'player' },
+                { id: '2', name: 'Dragoș', rating: 4, role: 'player' },
+                { id: '3', name: 'Irinel', rating: 4, role: 'player' },
+                { id: '4', name: 'Alexie', rating: 3, role: 'player' },
+                { id: '5', name: 'Mihai', rating: 3, role: 'goalkeeper' },
+                { id: '6', name: 'Andrei', rating: 4, role: 'player' },
+                { id: '7', name: 'Bogdan', rating: 3, role: 'player' },
+                { id: '8', name: 'Cristi', rating: 3, role: 'goalkeeper' }
             ]);
-            const [totalCost, setTotalCost] = useState(150);
-            const [matches, setMatches] = useState([]);
-            const [history, setHistory] = useState([]);
 
-            // Stare meci curent
+            const [teamNames, setTeamNames] = useState(() => JSON.parse(localStorage.getItem('sintetic_teamNames')) || { teamA: 'Echipa A', teamB: 'Echipa B', teamC: 'Echipa C' });
+            const [teams, setTeams] = useState(() => JSON.parse(localStorage.getItem('sintetic_teams')) || { teamA: [], teamB: [], teamC: [] });
+            
+            // Jucătorii prezenți la sesiunea curentă (salvează și statusul de plată)
+            const [presentIds, setPresentIds] = useState(() => JSON.parse(localStorage.getItem('sintetic_presentIds')) || ['1','2','3','4','5','6','7','8']);
+            const [paidIds, setPaidIds] = useState(() => JSON.parse(localStorage.getItem('sintetic_paidIds')) || []);
+
+            const [totalCost, setTotalCost] = useState(() => Number(localStorage.getItem('sintetic_cost')) || 150);
+            const [matches, setMatches] = useState(() => JSON.parse(localStorage.getItem('sintetic_matches')) || []);
+            const [history, setHistory] = useState(() => JSON.parse(localStorage.getItem('sintetic_history')) || []);
+            
+            // Vizualizare arhivă detaliată
+            const [viewingArchive, setViewingArchive] = useState(null);
+
             const [currentMatch, setCurrentMatch] = useState({
                 teamA: 'teamA',
                 teamB: 'teamB',
                 scoreA: 0,
                 scoreB: 0,
-                status: 'idle', // idle, playing, penalty, finished
+                status: 'idle', // idle, playing, scorers, penalty, finished
                 timer: 420,
-                timerEnabled: false
+                timerEnabled: false,
+                scorersA: [],
+                scorersB: []
             });
 
-            // Formular jucător nou
+            // Formular membru nou în baza de date a grupului
             const [newName, setNewName] = useState('');
             const [newRating, setNewRating] = useState(3);
             const [newRole, setNewRole] = useState('player');
 
-            // Instanță Firebase DB ref
-            const dbRef = React.useRef(null);
-            const isRemoteUpdate = React.useRef(false);
-
-            // Conectare și Ascultător Firebase
-            useEffect(() => {
-                const initFb = () => {
-                    try {
-                        const { initializeApp, getDatabase, ref, onValue, set } = window.fb;
-                        const app = initializeApp(firebaseConfig);
-                        const database = getDatabase(app);
-                        const sRef = ref(database, `sessions/${sessionId}`);
-                        dbRef.current = sRef;
-
-                        onValue(sRef, (snapshot) => {
-                            const data = snapshot.val();
-                            if (data) {
-                                isRemoteUpdate.current = true;
-                                if (data.teamNames) setTeamNames(data.teamNames);
-                                if (data.teams) setTeams(data.teams);
-                                if (data.pool) setPool(data.pool);
-                                if (data.totalCost !== undefined) setTotalCost(data.totalCost);
-                                setMatches(data.matches || []);
-                                setHistory(data.history || []);
-                                setTimeout(() => { isRemoteUpdate.current = false; }, 50);
-                            } else {
-                                // Inițializare sesiune goală în DB
-                                set(sRef, { teamNames, teams, pool, totalCost, matches: [], history: [] });
-                            }
-                            setConnected(true);
-                        });
-                    } catch (err) {
-                        console.error(err);
-                    }
-                };
-
-                if (window.fb) initFb();
-                else window.addEventListener('fb-ready', initFb);
-            }, [sessionId]);
-
-            // Funcție generală de salvare în Firebase
-            const saveData = (newData) => {
-                if (!dbRef.current || isRemoteUpdate.current) return;
-                const { set } = window.fb;
-                const payload = {
-                    teamNames,
-                    teams,
-                    pool,
-                    totalCost,
-                    matches,
-                    history,
-                    ...newData
-                };
-                set(dbRef.current, payload);
-            };
-
-            // Schimbare sesiune
-            const handleSessionChange = (e) => {
-                e.preventDefault();
-                if (!inputSid.trim()) return;
-                const cleanId = inputSid.trim().toLowerCase().replace(/\s+/g, '-');
-                localStorage.setItem('sintetic_sid', cleanId);
-                setSessionId(cleanId);
-            };
+            // Salvări automate în localStorage
+            useEffect(() => { localStorage.setItem('sintetic_rosterGroup', JSON.stringify(rosterGroup)); }, [rosterGroup]);
+            useEffect(() => { localStorage.setItem('sintetic_teamNames', JSON.stringify(teamNames)); }, [teamNames]);
+            useEffect(() => { localStorage.setItem('sintetic_teams', JSON.stringify(teams)); }, [teams]);
+            useEffect(() => { localStorage.setItem('sintetic_presentIds', JSON.stringify(presentIds)); }, [presentIds]);
+            useEffect(() => { localStorage.setItem('sintetic_paidIds', JSON.stringify(paidIds)); }, [paidIds]);
+            useEffect(() => { localStorage.setItem('sintetic_cost', totalCost); }, [totalCost]);
+            useEffect(() => { localStorage.setItem('sintetic_matches', JSON.stringify(matches)); }, [matches]);
+            useEffect(() => { localStorage.setItem('sintetic_history', JSON.stringify(history)); }, [history]);
 
             // Timer meci
             useEffect(() => {
@@ -155,7 +96,8 @@
                         setCurrentMatch(prev => {
                             if (prev.timer <= 1) {
                                 clearInterval(interval);
-                                return { ...prev, timer: 0, status: prev.scoreA === prev.scoreB ? 'penalty' : 'finished' };
+                                const isDraw = prev.scoreA === prev.scoreB;
+                                return { ...prev, timer: 0, status: (prev.scoreA > 0 || prev.scoreB > 0) ? 'scorers' : (isDraw ? 'penalty' : 'finished') };
                             }
                             return { ...prev, timer: prev.timer - 1 };
                         });
@@ -164,24 +106,44 @@
                 return () => clearInterval(interval);
             }, [currentMatch.status, currentMatch.timerEnabled, currentMatch.timer]);
 
-            // Gestionare Scor
             const updateScore = (team, delta) => {
                 setCurrentMatch(prev => {
                     let sA = prev.scoreA;
                     let sB = prev.scoreB;
                     if (team === 'A') sA = Math.max(0, Math.min(2, sA + delta));
                     if (team === 'B') sB = Math.max(0, Math.min(2, sB + delta));
-
                     let status = prev.status;
-                    if (sA === 2 || sB === 2) status = 'finished';
-
+                    if (sA === 2 || sB === 2) status = 'scorers';
                     return { ...prev, scoreA: sA, scoreB: sB, status };
                 });
             };
 
-            // Salvare Meci conform regulilor de punctaj
-            const saveMatch = (penaltyWinner = null) => {
-                const { scoreA, scoreB, teamA, teamB } = currentMatch;
+            const addScorer = (team, playerName) => {
+                setCurrentMatch(prev => {
+                    if (team === 'A') {
+                        return { ...prev, scorersA: [...prev.scorersA, playerName] };
+                    } else {
+                        return { ...prev, scorersB: [...prev.scorersB, playerName] };
+                    }
+                });
+            };
+
+            const removeScorer = (team, index) => {
+                setCurrentMatch(prev => {
+                    if (team === 'A') {
+                        const list = [...prev.scorersA];
+                        list.splice(index, 1);
+                        return { ...prev, scorersA: list };
+                    } else {
+                        const list = [...prev.scorersB];
+                        list.splice(index, 1);
+                        return { ...prev, scorersB: list };
+                    }
+                });
+            };
+
+            const finalizeMatchData = (penaltyWinner = null) => {
+                const { scoreA, scoreB, teamA, teamB, scorersA, scorersB } = currentMatch;
                 let ptsA = 0, ptsB = 0, details = '';
                 const diff = Math.abs(scoreA - scoreB);
 
@@ -203,28 +165,27 @@
                     teamBKey: teamB,
                     nameA: teamNames[teamA],
                     nameB: teamNames[teamB],
-                    scoreA, scoreB, ptsA, ptsB, details
+                    scoreA, scoreB, ptsA, ptsB, details,
+                    scorersA, scorersB
                 };
 
-                const updatedMatches = [newM, ...matches];
-                setMatches(updatedMatches);
-                saveData({ matches: updatedMatches });
-
+                setMatches([newM, ...matches]);
                 setCurrentMatch({
                     teamA: 'teamA', teamB: 'teamB', scoreA: 0, scoreB: 0,
-                    status: 'idle', timer: 420, timerEnabled: currentMatch.timerEnabled
+                    status: 'idle', timer: 420, timerEnabled: currentMatch.timerEnabled,
+                    scorersA: [], scorersB: []
                 });
             };
 
-            // Generator echipe echilibrat (Portari + Câmp)
+            // Generator echipe bazat doar pe cei prezenți
             const generateTeams = () => {
-                const present = pool.filter(p => p.present);
-                if (present.length < 6) {
-                    alert('Ai nevoie de cel puțin 6 jucători prezenți pentru a genera 3 echipe!');
+                const presentPlayers = rosterGroup.filter(p => presentIds.includes(p.id));
+                if (presentPlayers.length < 6) {
+                    alert('Ai nevoie de cel puțin 6 jucători prezenți bifați în lot pentru a genera 3 echipe!');
                     return;
                 }
-                const gks = present.filter(p => p.role === 'goalkeeper');
-                const outfield = present.filter(p => p.role !== 'goalkeeper').sort((a, b) => b.rating - a.rating);
+                const gks = presentPlayers.filter(p => p.role === 'goalkeeper');
+                const outfield = presentPlayers.filter(p => p.role !== 'goalkeeper').sort((a, b) => b.rating - a.rating);
 
                 let tA = [], tB = [], tC = [];
                 if (gks[0]) tA.push(gks[0]);
@@ -238,62 +199,67 @@
                     else tC.push(p);
                 });
 
-                const newTeams = { teamA: tA, teamB: tB, teamC: tC };
-                setTeams(newTeams);
-                saveData({ teams: newTeams });
+                setTeams({ teamA: tA, teamB: tB, teamC: tC });
             };
 
-            // Arhivare sesiune
             const archiveSession = () => {
                 if (matches.length === 0) {
                     alert('Nu există meciuri în sesiunea curentă!');
                     return;
                 }
-                const summary = { id: Date.now(), date: new Date().toLocaleDateString('ro-RO'), matchesCount: matches.length, matches };
-                const updatedHistory = [summary, ...history];
-                setHistory(updatedHistory);
+                const summary = { 
+                    id: Date.now(), 
+                    date: new Date().toLocaleDateString('ro-RO'), 
+                    matchesCount: matches.length, 
+                    matches,
+                    teamNames: {...teamNames}
+                };
+                setHistory([summary, ...history]);
                 setMatches([]);
-                saveData({ history: updatedHistory, matches: [] });
+                setPaidIds([]);
             };
 
-            // Gestionare Lot
-            const addPlayer = (e) => {
+            // Gestionare Baza de date grup
+            const addGroupMember = (e) => {
                 e.preventDefault();
                 if (!newName.trim()) return;
-                const p = { id: Date.now().toString(), name: newName.trim(), rating: Number(newRating), role: newRole, paid: false, present: true };
-                const updated = [...pool, p];
-                setPool(updated);
+                const p = { id: Date.now().toString(), name: newName.trim(), rating: Number(newRating), role: newRole };
+                setRosterGroup([...rosterGroup, p]);
+                setPresentIds([...presentIds, p.id]); // Automat prezent la adăugare
                 setNewName('');
-                saveData({ pool: updated });
             };
 
             const togglePresent = (id) => {
-                const updated = pool.map(x => x.id === id ? { ...x, present: !x.present } : x);
-                setPool(updated);
-                saveData({ pool: updated });
+                if (presentIds.includes(id)) {
+                    setPresentIds(presentIds.filter(x => x !== id));
+                } else {
+                    setPresentIds([...presentIds, id]);
+                }
             };
 
             const togglePaid = (id) => {
-                const updated = pool.map(x => x.id === id ? { ...x, paid: !x.paid } : x);
-                setPool(updated);
-                saveData({ pool: updated });
+                if (paidIds.includes(id)) {
+                    setPaidIds(paidIds.filter(x => x !== id));
+                } else {
+                    setPaidIds([...paidIds, id]);
+                }
             };
 
-            const deletePlayer = (id) => {
-                const updated = pool.filter(x => x.id !== id);
-                setPool(updated);
-                saveData({ pool: updated });
+            const deleteGroupMember = (id) => {
+                setRosterGroup(rosterGroup.filter(x => x.id !== id));
+                setPresentIds(presentIds.filter(x => x !== id));
+                setPaidIds(paidIds.filter(x => x !== id));
             };
 
-            // Clasament între echipe
-            const getLeaderboard = () => {
+            // Calcul Clasament Echipe
+            const calculateLeaderboard = (matchList, tNames) => {
                 const stats = {
-                    teamA: { key: 'teamA', name: teamNames.teamA, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 },
-                    teamB: { key: 'teamB', name: teamNames.teamB, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 },
-                    teamC: { key: 'teamC', name: teamNames.teamC, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 }
+                    teamA: { key: 'teamA', name: tNames.teamA, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 },
+                    teamB: { key: 'teamB', name: tNames.teamB, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 },
+                    teamC: { key: 'teamC', name: tNames.teamC, played: 0, wins: 0, draws: 0, losses: 0, points: 0, gf: 0, ga: 0 }
                 };
 
-                matches.forEach(m => {
+                matchList.forEach(m => {
                     if (stats[m.teamAKey]) {
                         stats[m.teamAKey].played++;
                         stats[m.teamAKey].gf += m.scoreA;
@@ -317,37 +283,40 @@
                 return Object.values(stats).sort((a, b) => b.points - a.points || (b.gf - b.ga) - (a.gf - a.ga));
             };
 
-            const leaderboard = getLeaderboard();
-            const presentCount = pool.filter(p => p.present).length;
-            const costPerPerson = presentCount > 0 ? (totalCost / presentCount).toFixed(2) : 0;
+            // Calcul Clasament Golgheteri (Marcatori)
+            const calculateScorers = (matchList) => {
+                const map = {};
+                matchList.forEach(m => {
+                    if (m.scorersA) {
+                        m.scorersA.forEach(name => {
+                            map[name] = (map[name] || 0) + 1;
+                        });
+                    }
+                    if (m.scorersB) {
+                        m.scorersB.forEach(name => {
+                            map[name] = (map[name] || 0) + 1;
+                        });
+                    }
+                });
+                return Object.entries(map).map(([name, goals]) => ({ name, goals })).sort((a, b) => b.goals - a.goals);
+            };
+
+            const leaderboard = calculateLeaderboard(matches, teamNames);
+            const scorersLeaderboard = calculateScorers(matches);
+            const presentPlayersList = rosterGroup.filter(p => presentIds.includes(p.id));
+            const costPerPerson = presentPlayersList.length > 0 ? (totalCost / presentPlayersList.length).toFixed(2) : 0;
+
+            // Jucători din echipa activă pentru introducerea marcatorilor
+            const activeTeamAPlayers = teams[currentMatch.teamA] || [];
+            const activeTeamBPlayers = teams[currentMatch.teamB] || [];
 
             return (
                 <div className="max-w-md mx-auto min-h-screen pb-24 bg-dark-900 flex flex-col">
-                    {/* Header */}
                     <header className="bg-dark-800 border-b border-dark-700 p-4 sticky top-0 z-50 flex justify-between items-center">
                         <span className="text-xl font-black bg-gradient-to-r from-neon-cyan to-neon-lime bg-clip-text text-transparent">SINTETIC PRO</span>
-                        <div className="flex items-center space-x-1.5">
-                            <span className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-neon-lime animate-pulse' : 'bg-yellow-500'}`}></span>
-                            <span className="text-xs text-gray-400">{connected ? 'Live Sync' : 'Se conectează...'}</span>
-                        </div>
+                        <span className="text-xs text-neon-lime bg-neon-lime/10 px-2.5 py-1 rounded-full font-medium">Salvat Local</span>
                     </header>
 
-                    {/* Bară Sesiune */}
-                    <div className="bg-dark-800/90 border-b border-dark-700 px-4 py-2 flex items-center justify-between text-xs">
-                        <span className="text-gray-400">Sesiune: <strong className="text-neon-cyan">{sessionId}</strong></span>
-                        <form onSubmit={handleSessionChange} className="flex gap-1">
-                            <input 
-                                type="text" 
-                                value={inputSid} 
-                                onChange={(e) => setInputSid(e.target.value)} 
-                                placeholder="Cod sesiune..."
-                                className="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-100 w-28 focus:outline-none focus:border-neon-cyan"
-                            />
-                            <button type="submit" className="bg-neon-cyan text-dark-900 font-bold px-2 py-1 rounded">Schimbă</button>
-                        </form>
-                    </div>
-
-                    {/* Conținut Pagini */}
                     <main className="flex-1 p-4 overflow-y-auto space-y-4">
                         {/* TAB 1: MECI */}
                         {activeTab === 'match' && (
@@ -434,8 +403,73 @@
                                     {currentMatch.status === 'playing' && (
                                         <div className="space-y-2">
                                             <span className="text-xs text-yellow-400">Meci în desfășurare (Max 2 goluri)</span>
-                                            <button onClick={() => setCurrentMatch({...currentMatch, status: currentMatch.scoreA === currentMatch.scoreB ? 'penalty' : 'finished'})} className="w-full py-2 bg-red-600/20 text-red-400 border border-red-600/50 font-bold rounded-xl text-sm">
+                                            <button onClick={() => {
+                                                const isDraw = currentMatch.scoreA === currentMatch.scoreB;
+                                                const hasGoals = currentMatch.scoreA > 0 || currentMatch.scoreB > 0;
+                                                setCurrentMatch({
+                                                    ...currentMatch, 
+                                                    status: hasGoals ? 'scorers' : (isDraw ? 'penalty' : 'finished')
+                                                });
+                                            }} className="w-full py-2 bg-red-600/20 text-red-400 border border-red-600/50 font-bold rounded-xl text-sm">
                                                 Încheie Meciul
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* PASUL DE MARCATORI */}
+                                    {currentMatch.status === 'scorers' && (
+                                        <div className="space-y-3 bg-dark-700/50 p-3 rounded-xl border border-dark-600 text-left">
+                                            <div className="text-xs font-bold text-neon-cyan text-center">Adaugă Marcatorii Golurilor ⚽</div>
+                                            
+                                            {/* Echipa A Marcatori */}
+                                            {currentMatch.scoreA > 0 && (
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] text-gray-400 font-bold">{teamNames[currentMatch.teamA]} (Goluri: {currentMatch.scoreA})</label>
+                                                    <div className="flex flex-wrap gap-1 mb-1">
+                                                        {currentMatch.scorersA.map((sc, idx) => (
+                                                            <span key={idx} className="bg-neon-cyan/20 text-neon-cyan text-xs px-2 py-0.5 rounded flex items-center gap-1">
+                                                                {sc} <button onClick={() => removeScorer('A', idx)} className="font-bold text-red-400">×</button>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    {activeTeamAPlayers.length > 0 ? (
+                                                        <select onChange={(e) => { if(e.target.value) { addScorer('A', e.target.value); e.target.value=''; } }} className="w-full bg-dark-800 border border-dark-600 text-xs rounded p-1.5 text-gray-200">
+                                                            <option value="">+ Adaugă marcator...</option>
+                                                            {activeTeamAPlayers.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                                        </select>
+                                                    ) : (
+                                                        <input type="text" placeholder="Nume marcator..." onKeyDown={(e) => { if(e.key === 'Enter' && e.target.value.trim()) { addScorer('A', e.target.value.trim()); e.target.value=''; } }} className="w-full bg-dark-800 border border-dark-600 text-xs rounded p-1.5 text-gray-200" />
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {/* Echipa B Marcatori */}
+                                            {currentMatch.scoreB > 0 && (
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] text-gray-400 font-bold">{teamNames[currentMatch.teamB]} (Goluri: {currentMatch.scoreB})</label>
+                                                    <div className="flex flex-wrap gap-1 mb-1">
+                                                        {currentMatch.scorersB.map((sc, idx) => (
+                                                            <span key={idx} className="bg-neon-lime/20 text-neon-lime text-xs px-2 py-0.5 rounded flex items-center gap-1">
+                                                                {sc} <button onClick={() => removeScorer('B', idx)} className="font-bold text-red-400">×</button>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    {activeTeamBPlayers.length > 0 ? (
+                                                        <select onChange={(e) => { if(e.target.value) { addScorer('B', e.target.value); e.target.value=''; } }} className="w-full bg-dark-800 border border-dark-600 text-xs rounded p-1.5 text-gray-200">
+                                                            <option value="">+ Adaugă marcator...</option>
+                                                            {activeTeamBPlayers.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                                        </select>
+                                                    ) : (
+                                                        <input type="text" placeholder="Nume marcator..." onKeyDown={(e) => { if(e.key === 'Enter' && e.target.value.trim()) { addScorer('B', e.target.value.trim()); e.target.value=''; } }} className="w-full bg-dark-800 border border-dark-600 text-xs rounded p-1.5 text-gray-200" />
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            <button onClick={() => {
+                                                const isDraw = currentMatch.scoreA === currentMatch.scoreB;
+                                                setCurrentMatch({...currentMatch, status: isDraw ? 'penalty' : 'finished'});
+                                            }} className="w-full py-2 bg-neon-cyan text-dark-900 font-bold rounded-lg text-xs mt-2">
+                                                Continuă
                                             </button>
                                         </div>
                                     )}
@@ -444,14 +478,14 @@
                                         <div className="space-y-2 bg-dark-700/50 p-3 rounded-xl border border-dark-600">
                                             <div className="text-xs font-bold text-yellow-400">Egalitate! Cine a câștigat la penalty-uri?</div>
                                             <div className="grid grid-cols-2 gap-2">
-                                                <button onClick={() => saveMatch('A')} className="py-2 bg-neon-cyan text-dark-900 font-bold rounded-lg text-xs truncate px-1">{teamNames[currentMatch.teamA]}</button>
-                                                <button onClick={() => saveMatch('B')} className="py-2 bg-neon-lime text-dark-900 font-bold rounded-lg text-xs truncate px-1">{teamNames[currentMatch.teamB]}</button>
+                                                <button onClick={() => finalizeMatchData('A')} className="py-2 bg-neon-cyan text-dark-900 font-bold rounded-lg text-xs truncate px-1">{teamNames[currentMatch.teamA]}</button>
+                                                <button onClick={() => finalizeMatchData('B')} className="py-2 bg-neon-lime text-dark-900 font-bold rounded-lg text-xs truncate px-1">{teamNames[currentMatch.teamB]}</button>
                                             </div>
                                         </div>
                                     )}
 
                                     {currentMatch.status === 'finished' && (
-                                        <button onClick={() => saveMatch(null)} className="w-full py-3 bg-neon-lime text-dark-900 font-black rounded-xl shadow-lg">
+                                        <button onClick={() => finalizeMatchData(null)} className="w-full py-3 bg-neon-lime text-dark-900 font-black rounded-xl shadow-lg">
                                             Salvează în Clasament
                                         </button>
                                     )}
@@ -464,6 +498,11 @@
                                             <div>
                                                 <div className="font-bold">{m.nameA} vs {m.nameB}</div>
                                                 <div className="text-xs text-gray-400">{m.details}</div>
+                                                {(m.scorersA?.length > 0 || m.scorersB?.length > 0) && (
+                                                    <div className="text-[11px] text-neon-cyan mt-1">
+                                                        ⚽ {m.nameA}: {m.scorersA?.join(', ') || '-'} | {m.nameB}: {m.scorersB?.join(', ') || '-'}
+                                                    </div>
+                                                )}
                                             </div>
                                             <div className="text-right">
                                                 <div className="font-mono font-bold text-neon-cyan">{m.scoreA} - {m.scoreB}</div>
@@ -487,11 +526,7 @@
                                                 <input 
                                                     type="text" 
                                                     value={teamNames[k]} 
-                                                    onChange={(e) => {
-                                                        const updated = {...teamNames, [k]: e.target.value};
-                                                        setTeamNames(updated);
-                                                        saveData({ teamNames: updated });
-                                                    }}
+                                                    onChange={(e) => setTeamNames({...teamNames, [k]: e.target.value})}
                                                     className="w-full bg-dark-700 border border-dark-600 rounded-lg p-2 text-xs font-bold text-neon-cyan"
                                                 />
                                             </div>
@@ -502,7 +537,7 @@
                                 <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 flex justify-between items-center">
                                     <div>
                                         <h3 className="font-bold text-gray-200 text-sm">Generator Echipe</h3>
-                                        <p className="text-xs text-gray-400">Împarte portarii și jucătorii echilibrat.</p>
+                                        <p className="text-xs text-gray-400">Folosește doar jucătorii bifați ca **Prezenți**.</p>
                                     </div>
                                     <button onClick={generateTeams} className="px-3 py-2 bg-neon-cyan text-dark-900 font-bold text-xs rounded-xl shadow-lg">
                                         Generează
@@ -529,29 +564,29 @@
                         {activeTab === 'squad' && (
                             <div className="space-y-4">
                                 <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 space-y-3">
-                                    <h3 className="font-bold text-gray-200 text-sm">Costuri & Prezență</h3>
+                                    <h3 className="font-bold text-gray-200 text-sm">Costuri & Prezență Sesiune</h3>
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
                                             <label className="text-xs text-gray-400 block mb-1">Cost Total (RON)</label>
                                             <input 
                                                 type="number" 
                                                 value={totalCost} 
-                                                onChange={(e) => { const v = Number(e.target.value); setTotalCost(v); saveData({ totalCost: v }); }}
+                                                onChange={(e) => setTotalCost(Number(e.target.value))}
                                                 className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm font-bold text-neon-cyan"
                                             />
                                         </div>
                                         <div>
                                             <label className="text-xs text-gray-400 block mb-1">De Plătit / Pers</label>
                                             <div className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm font-bold text-neon-lime">
-                                                {costPerPerson} RON <span className="text-xs text-gray-400">({presentCount} pers)</span>
+                                                {costPerPerson} RON <span className="text-xs text-gray-400">({presentPlayersList.length} pers)</span>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
 
                                 <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 space-y-3">
-                                    <h3 className="font-bold text-gray-200 text-sm">Adaugă Jucător</h3>
-                                    <form onSubmit={addPlayer} className="space-y-2">
+                                    <h3 className="font-bold text-gray-200 text-sm">Adaugă Jucător în Baza de Date a Grupului</h3>
+                                    <form onSubmit={addGroupMember} className="space-y-2">
                                         <div className="flex gap-2">
                                             <input 
                                                 type="text" 
@@ -560,4 +595,192 @@
                                                 onChange={(e) => setNewName(e.target.value)}
                                                 className="flex-1 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none"
                                             />
-                                            <select value={newRating} onChange={(
+                                            <select value={newRating} onChange={(e) => setNewRating(e.target.value)} className="bg-dark-700 border border-dark-600 rounded-lg px-2 text-sm">
+                                                {[1,2,3,4,5].map(r => <option key={r} value={r}>★ {r}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} className="flex-1 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm">
+                                                <option value="player">Jucător de câmp</option>
+                                                <option value="goalkeeper">Portar 🧤</option>
+                                            </select>
+                                            <button type="submit" className="bg-neon-cyan text-dark-900 font-bold px-4 py-2 rounded-lg text-sm">Adaugă</button>
+                                        </div>
+                                    </form>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Baza de Date Grup ({rosterGroup.length})</h3>
+                                    <p className="text-[11px] text-gray-400">Bifează cine este <strong>prezent</strong> la meciul acesta:</p>
+                                    {rosterGroup.map(p => {
+                                        const isPresent = presentIds.includes(p.id);
+                                        const isPaid = paidIds.includes(p.id);
+                                        return (
+                                            <div key={p.id} className="bg-dark-800 border border-dark-700 p-3 rounded-xl flex justify-between items-center text-sm">
+                                                <div className="flex items-center space-x-3">
+                                                    <input type="checkbox" checked={isPresent} onChange={() => togglePresent(p.id)} className="w-4 h-4 accent-neon-cyan cursor-pointer" title="Prezent?" />
+                                                    <div>
+                                                        <div className={`font-bold ${isPresent ? '' : 'text-gray-500 line-through'}`}>
+                                                            {p.name} {p.role === 'goalkeeper' && <span className="text-yellow-400 text-xs">🧤</span>}
+                                                        </div>
+                                                        <div className="text-xs text-neon-cyan">{'★'.repeat(p.rating)}</div>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center space-x-2">
+                                                    {isPresent && (
+                                                        <button onClick={() => togglePaid(p.id)} className={`px-2 py-1 rounded-lg text-xs font-bold ${isPaid ? 'bg-neon-lime/20 text-neon-lime' : 'bg-dark-700 text-gray-400'}`}>
+                                                            {isPaid ? 'Plătit' : 'Neplătit'}
+                                                        </button>
+                                                    )}
+                                                    <button onClick={() => deleteGroupMember(p.id)} className="text-red-400 font-bold px-1" title="Șterge din grup">×</button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 4: CLASAMENT */}
+                        {activeTab === 'leaderboard' && (
+                            <div className="space-y-4">
+                                {viewingArchive ? (
+                                    <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 space-y-4">
+                                        <div className="flex justify-between items-center border-b border-dark-700 pb-2">
+                                            <h3 className="font-bold text-neon-cyan text-sm">Arhivă Sesiune ({viewingArchive.date})</h3>
+                                            <button onClick={() => setViewingArchive(null)} className="text-xs bg-dark-700 px-3 py-1 rounded-lg text-gray-300 font-bold">Înapoi</button>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <h4 className="text-xs font-bold text-gray-400 uppercase">Clasament Echipe</h4>
+                                            <table className="w-full text-left text-sm">
+                                                <thead>
+                                                    <tr className="border-b border-dark-700 text-gray-400 text-xs">
+                                                        <th className="pb-1">Echipă</th>
+                                                        <th className="pb-1 text-center">M</th>
+                                                        <th className="pb-1 text-center">G</th>
+                                                        <th className="pb-1 text-right">Ptc</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-dark-700">
+                                                    {calculateLeaderboard(viewingArchive.matches, viewingArchive.teamNames).map((item, idx) => (
+                                                        <tr key={item.key}>
+                                                            <td className="py-2 font-bold">#{idx+1} {item.name}</td>
+                                                            <td className="py-2 text-center text-gray-300">{item.played}</td>
+                                                            <td className="py-2 text-center text-gray-300">{item.gf}-{item.ga}</td>
+                                                            <td className="py-2 text-right font-bold text-neon-lime">{item.points}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        <div className="space-y-2 pt-2 border-t border-dark-700">
+                                            <h4 className="text-xs font-bold text-gray-400 uppercase">Golgheteri Sesiune</h4>
+                                            <div className="space-y-1">
+                                                {calculateScorers(viewingArchive.matches).map((sc, i) => (
+                                                    <div key={i} className="flex justify-between text-xs bg-dark-700/40 px-3 py-1.5 rounded-lg">
+                                                        <span>{sc.name}</span>
+                                                        <span className="font-bold text-neon-cyan">⚽ {sc.goals} goluri</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 overflow-x-auto space-y-4">
+                                            <h3 className="font-bold text-gray-200 text-sm">Clasament Echipe (Sesiunea Curentă)</h3>
+                                            <table className="w-full text-left text-sm">
+                                                <thead>
+                                                    <tr className="border-b border-dark-700 text-gray-400 text-xs">
+                                                        <th className="pb-2">Echipă</th>
+                                                        <th className="pb-2 text-center">M</th>
+                                                        <th className="pb-2 text-center">G</th>
+                                                        <th className="pb-2 text-right">Ptc</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-dark-700">
+                                                    {leaderboard.map((item, index) => (
+                                                        <tr key={item.key}>
+                                                            <td className="py-2.5 font-bold flex items-center space-x-2">
+                                                                <span className="text-xs text-gray-500 font-mono">#{index + 1}</span>
+                                                                <span className={index === 0 ? 'text-neon-cyan' : ''}>{item.name}</span>
+                                                            </td>
+                                                            <td className="py-2.5 text-center text-gray-300">{item.played}</td>
+                                                            <td className="py-2.5 text-center text-gray-300">{item.gf}-{item.ga}</td>
+                                                            <td className="py-2.5 text-right font-bold text-neon-lime">{item.points}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        {/* GOLGHETERI / MARCATORI */}
+                                        <div className="bg-dark-800 border border-dark-700 rounded-2xl p-4 space-y-3">
+                                            <h3 className="font-bold text-gray-200 text-sm">Golgheteri / Marcatori ⚽</h3>
+                                            {scorersLeaderboard.length === 0 ? (
+                                                <p className="text-xs text-gray-400">Niciun gol înregistrat în sesiunea curentă.</p>
+                                            ) : (
+                                                <div className="space-y-1.5">
+                                                    {scorersLeaderboard.map((sc, index) => (
+                                                        <div key={index} className="flex justify-between items-center text-xs bg-dark-700/50 px-3 py-2 rounded-lg">
+                                                            <div className="font-bold flex items-center gap-2">
+                                                                <span className="text-gray-500 font-mono">#{index + 1}</span>
+                                                                <span>{sc.name}</span>
+                                                            </div>
+                                                            <span className="font-mono font-bold text-neon-cyan bg-neon-cyan/10 px-2 py-0.5 rounded">
+                                                                ⚽ {sc.goals} {sc.goals === 1 ? 'gol' : 'goluri'}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="space-y-3 pt-2">
+                                            <div className="flex justify-between items-center">
+                                                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Arhivă Sesiuni</h3>
+                                                <button onClick={archiveSession} className="text-xs bg-dark-800 border border-dark-700 text-neon-cyan px-3 py-1.5 rounded-lg font-bold">
+                                                    Arhivează Sesiunea
+                                                </button>
+                                            </div>
+
+                                            {history.map(s => (
+                                                <div key={s.id} onClick={() => setViewingArchive(s)} className="bg-dark-800 border border-dark-700 p-3 rounded-xl text-xs space-y-1 cursor-pointer hover:border-neon-cyan transition">
+                                                    <div className="font-bold text-gray-200 flex justify-between">
+                                                        <span>Sesiune {s.date}</span>
+                                                        <span className="text-neon-cyan font-bold">Vezi Detalii →</span>
+                                                    </div>
+                                                    <div className="text-gray-400">{s.matchesCount} meciuri jucate</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </main>
+
+                    <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-dark-800 border-t border-dark-700 grid grid-cols-4 py-2 px-2 z-50">
+                        {['match', 'teams', 'squad', 'leaderboard'].map((tab, idx) => {
+                            const labels = ['Meci', 'Echipă', 'Lot & Bani', 'Clasament'];
+                            return (
+                                <button 
+                                    key={tab} 
+                                    onClick={() => { setActiveTab(tab); setViewingArchive(null); }} 
+                                    className={`py-2 rounded-xl text-xs font-bold transition ${activeTab === tab ? 'text-neon-cyan bg-dark-700/50' : 'text-gray-400'}`}
+                                >
+                                    {labels[idx]}
+                                </button>
+                            );
+                        })}
+                    </nav>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
