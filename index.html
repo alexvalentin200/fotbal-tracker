@@ -35,8 +35,8 @@
     <!-- Firebase SDK (Modular v10 via CDN) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-        window.firebaseModules = { initializeApp, getDatabase, ref, set, onValue };
+        import { getDatabase, ref, set, update, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        window.firebaseModules = { initializeApp, getDatabase, ref, set, update, onValue };
         window.dispatchEvent(new Event('firebase-loaded'));
     </script>
     <style>
@@ -64,14 +64,8 @@
             const [tempSessionInput, setTempSessionInput] = useState(sessionId);
 
             // App State
-            const [teamNames, setTeamNames] = useState({
-                teamA: 'Echipa A',
-                teamB: 'Echipa B',
-                teamC: 'Echipa C'
-            });
-
+            const [teamNames, setTeamNames] = useState({ teamA: 'Echipa A', teamB: 'Echipa B', teamC: 'Echipa C' });
             const [teams, setTeams] = useState({ teamA: [], teamB: [], teamC: [], bench: [] });
-            
             const [pool, setPool] = useState([
                 { id: '1', name: 'Valentin', rating: 5, role: 'player', paid: false, present: true },
                 { id: '2', name: 'Dragoș', rating: 4, role: 'player', paid: false, present: true },
@@ -84,9 +78,10 @@
                 { id: '9', name: 'Vlad', rating: 4, role: 'player', paid: false, present: true },
                 { id: '10', name: 'Radu', rating: 3, role: 'player', paid: false, present: true }
             ]);
-
             const [totalCost, setTotalCost] = useState(150);
             const [matches, setMatches] = useState([]);
+            const [history, setHistory] = useState([]);
+
             const [currentMatch, setCurrentMatch] = useState({
                 teamA: 'teamA',
                 teamB: 'teamB',
@@ -94,22 +89,24 @@
                 scoreB: 0,
                 status: 'idle',
                 timer: 420,
-                timerEnabled: false,
-                penaltyWinner: null
+                timerEnabled: false
             });
-            const [history, setHistory] = useState([]);
+
             const [newPlayerName, setNewPlayerName] = useState('');
             const [newPlayerRating, setNewPlayerRating] = useState(3);
             const [newPlayerRole, setNewPlayerRole] = useState('player');
 
-            // Flag pentru a evita suprascrierea la prima încărcare
-            const isInitialMount = useRef(true);
+            // Ref pentru starea curentă pentru a evita problemele de sincronizare în rețea
+            const stateRef = useRef({ pool, teams, teamNames, totalCost, matches, history });
+            useEffect(() => {
+                stateRef.current = { pool, teams, teamNames, totalCost, matches, history };
+            });
 
-            // Initialize Firebase & Realtime Listener
+            // Conexiune Firebase și Ascultător în timp real
             useEffect(() => {
                 const handleFirebaseLoaded = () => {
                     try {
-                        const { initializeApp, getDatabase, ref, onValue } = window.firebaseModules;
+                        const { initializeApp, getDatabase, ref, set, onValue } = window.firebaseModules;
                         const app = initializeApp(firebaseConfig);
                         const database = getDatabase(app);
                         setDb(database);
@@ -125,9 +122,8 @@
                                 setMatches(data.matches || []);
                                 setHistory(data.history || []);
                             } else {
-                                // Dacă nu există în DB, salvăm datele inițiale
-                                const { ref: dbRef, set: dbSet } = window.firebaseModules;
-                                dbSet(ref(database, `sessions/${sessionId}`), {
+                                // Dacă sesiunea nu există în DB, o inițializăm
+                                set(sessionRef, {
                                     pool,
                                     teams,
                                     teamNames,
@@ -150,22 +146,12 @@
                 }
             }, [sessionId]);
 
-            // Funcție universală de salvare în Firebase care păstrează tot ce e actual
-            const updateFirebase = (newData) => {
+            // Funcție sigură de actualizare în Firebase
+            const updateRemote = (partialData) => {
                 if (!db) return;
-                const { ref, set } = window.firebaseModules;
+                const { ref, update } = window.firebaseModules;
                 const sessionRef = ref(db, `sessions/${sessionId}`);
-                
-                const payload = {
-                    pool,
-                    teams,
-                    teamNames,
-                    totalCost,
-                    matches,
-                    history,
-                    ...newData
-                };
-                set(sessionRef, payload);
+                update(sessionRef, partialData);
             };
 
             const changeSession = (e) => {
@@ -245,7 +231,7 @@
 
                 const updatedMatches = [newMatchItem, ...matches];
                 setMatches(updatedMatches);
-                updateFirebase({ matches: updatedMatches });
+                updateRemote({ matches: updatedMatches });
 
                 setCurrentMatch({
                     teamA: 'teamA',
@@ -254,8 +240,7 @@
                     scoreB: 0,
                     status: 'idle',
                     timer: 420,
-                    timerEnabled: currentMatch.timerEnabled,
-                    penaltyWinner: null
+                    timerEnabled: currentMatch.timerEnabled
                 });
             };
 
@@ -290,7 +275,7 @@
 
                 const newTeams = { teamA, teamB, teamC, bench: [] };
                 setTeams(newTeams);
-                updateFirebase({ teams: newTeams });
+                updateRemote({ teams: newTeams });
             };
 
             const archiveSession = () => {
@@ -307,7 +292,7 @@
                 const updatedHistory = [sessionSummary, ...history];
                 setHistory(updatedHistory);
                 setMatches([]);
-                updateFirebase({ history: updatedHistory, matches: [] });
+                updateRemote({ history: updatedHistory, matches: [] });
             };
 
             const addPlayer = (e) => {
@@ -324,25 +309,25 @@
                 const updatedPool = [...pool, newP];
                 setPool(updatedPool);
                 setNewPlayerName('');
-                updateFirebase({ pool: updatedPool });
+                updateRemote({ pool: updatedPool });
             };
 
             const togglePresent = (id) => {
                 const updated = pool.map(p => p.id === id ? { ...p, present: !p.present } : p);
                 setPool(updated);
-                updateFirebase({ pool: updated });
+                updateRemote({ pool: updated });
             };
 
             const togglePaid = (id) => {
                 const updated = pool.map(p => p.id === id ? { ...p, paid: !p.paid } : p);
                 setPool(updated);
-                updateFirebase({ pool: updated });
+                updateRemote({ pool: updated });
             };
 
             const deletePlayer = (id) => {
                 const updated = pool.filter(p => p.id !== id);
                 setPool(updated);
-                updateFirebase({ pool: updated });
+                updateRemote({ pool: updated });
             };
 
             const calculateTeamLeaderboard = () => {
@@ -572,7 +557,7 @@
                                                 onChange={(e) => {
                                                     const updated = {...teamNames, teamA: e.target.value};
                                                     setTeamNames(updated);
-                                                    updateFirebase({ teamNames: updated });
+                                                    updateRemote({ teamNames: updated });
                                                 }}
                                                 className="w-full bg-dark-700 border border-dark-600 rounded-lg p-2 text-xs font-bold text-neon-cyan"
                                             />
@@ -585,7 +570,7 @@
                                                 onChange={(e) => {
                                                     const updated = {...teamNames, teamB: e.target.value};
                                                     setTeamNames(updated);
-                                                    updateFirebase({ teamNames: updated });
+                                                    updateRemote({ teamNames: updated });
                                                 }}
                                                 className="w-full bg-dark-700 border border-dark-600 rounded-lg p-2 text-xs font-bold text-neon-lime"
                                             />
@@ -598,7 +583,7 @@
                                                 onChange={(e) => {
                                                     const updated = {...teamNames, teamC: e.target.value};
                                                     setTeamNames(updated);
-                                                    updateFirebase({ teamNames: updated });
+                                                    updateRemote({ teamNames: updated });
                                                 }}
                                                 className="w-full bg-dark-700 border border-dark-600 rounded-lg p-2 text-xs font-bold text-yellow-400"
                                             />
@@ -673,7 +658,7 @@
                                                 onChange={(e) => { 
                                                     const val = Number(e.target.value);
                                                     setTotalCost(val); 
-                                                    updateFirebase({ totalCost: val }); 
+                                                    updateRemote({ totalCost: val }); 
                                                 }}
                                                 className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm font-bold text-neon-cyan focus:outline-none"
                                             />
